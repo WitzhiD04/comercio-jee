@@ -1,0 +1,2775 @@
+{
+  "info": {
+    "_postman_id": "a0401c94-9fd2-413b-9bb8-fa2f2f5314d3",
+    "name": "comercio-jee — API completa (CRUD + SAGA + CQRS)",
+    "description": "Colección completa del Taller 1 JEE.\n\n**Cómo usarla**\n1. Levante el sistema: `./mvnw clean package && docker compose up --build`.\n2. Ajuste `baseUrl` si Payara no está en `localhost:8080`.\n3. Ejecute la colección completa con el **Collection Runner** (o `newman run`) en orden. Las peticiones marcadas como *Esperar* / *espera proyección* se repiten solas hasta que la SAGA asíncrona y las proyecciones CQRS terminan (consistencia eventual).\n\nLos ids de los productos semilla se obtienen por SKU en la carpeta 0, así que ejecútela primero si envía peticiones sueltas.\n\nCarpetas: 0 setup · 1 CRUD de productos · 2 pedido OK · 3 pago FAIL · 4 monto excedido · 5 sin stock · 6 consultas · 7 errores.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "0 - Setup y catálogo (consultas CQRS)",
+      "item": [
+        {
+          "name": "0.1 Listar productos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test('Content-Type JSON', () => pm.expect(pm.response.headers.get('Content-Type') || '').to.include('application/json'));",
+                  "",
+                  "const list = pm.response.json();",
+                  "pm.test('Devuelve un arreglo con los 6 productos semilla (o más)', () => {",
+                  "    pm.expect(list).to.be.an('array');",
+                  "    pm.expect(list.length).to.be.at.least(6);",
+                  "});",
+                  "// Guarda los ids reales de los productos semilla según su SKU",
+                  "const map = {'LAP-001':'lapId','MOU-001':'mouId','KEY-001':'keyId','MON-001':'monId','HDS-001':'hdsId','USB-001':'usbId'};",
+                  "Object.entries(map).forEach(([sku, v]) => {",
+                  "    const p = list.find(x => x.sku === sku);",
+                  "    pm.test('Existe el producto semilla ' + sku, () => pm.expect(p).to.not.be.undefined);",
+                  "    if (p) pm.collectionVariables.set(v, p.productId);",
+                  "});",
+                  "pm.test('Cada vista tiene los campos del modelo de lectura', () => list.forEach(p =>",
+                  "    pm.expect(p).to.include.all.keys('productId','sku','name','price','stock','reserved','available','active','updatedAt')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.2 Consultar producto por id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{mouId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{mouId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const p = pm.response.json();",
+                  "pm.test('Es MOU-001', () => pm.expect(p.sku).to.eql('MOU-001'));",
+                  "pm.test('available = stock - reserved', () => pm.expect(p.available).to.eql(p.stock - p.reserved));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.3 Consultar inventario disponible",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const inv = pm.response.json();",
+                  "pm.test('Cada ítem tiene productId, sku, name, stock, reserved, available, active', () => inv.forEach(i =>",
+                  "    pm.expect(i).to.include.all.keys('productId','sku','name','stock','reserved','available','active')));",
+                  "pm.test('Disponible = stock - reservado', () => inv.forEach(i => pm.expect(i.available).to.eql(i.stock - i.reserved)));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Obtiene los ids reales de los productos semilla (por SKU) y los guarda en variables de la colección. Ejecute esta carpeta primero."
+    },
+    {
+      "name": "1 - Productos: comandos CRUD",
+      "item": [
+        {
+          "name": "1.1 Registrar producto",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sku\": \"{{newSku}}\",\n  \"name\": \"Webcam Logitech C920\",\n  \"price\": 320000.0,\n  \"stock\": 20,\n  \"active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('newSku', 'TEST-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "const p = pm.response.json();",
+                  "pm.collectionVariables.set('newProductId', p.productId ?? p.id);",
+                  "pm.test('Header Location apunta al nuevo recurso', () => pm.expect(pm.response.headers.get('Location')).to.include('/products/' + p.id));",
+                  "pm.test('Datos registrados', () => {",
+                  "    pm.expect(p.sku).to.eql(pm.collectionVariables.get('newSku'));",
+                  "    pm.expect(Number(p.price)).to.eql(320000);",
+                  "    pm.expect(p.stock).to.eql(20);",
+                  "    pm.expect(p.reserved).to.eql(0);",
+                  "    pm.expect(p.available).to.eql(20);",
+                  "    pm.expect(p.active).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.2 Ver producto nuevo en el modelo de lectura (espera proyección)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{newProductId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { return pm.response.code === 200; })(); } catch (e) { ready = false; }",
+                  "console.log('[proyección producto] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[proyección producto] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    pm.test('La proyección refleja el producto creado', () => pm.expect(pm.response.json().sku).to.eql(pm.collectionVariables.get('newSku')));",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.3 Actualizar producto completo (PUT)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{newProductId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sku\": \"{{newSku}}\",\n  \"name\": \"Webcam Logitech C920 Pro HD\",\n  \"price\": 299000.0,\n  \"stock\": 25,\n  \"active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const p = pm.response.json();",
+                  "pm.test('Nombre, precio y stock actualizados', () => {",
+                  "    pm.expect(p.name).to.eql('Webcam Logitech C920 Pro HD');",
+                  "    pm.expect(Number(p.price)).to.eql(299000);",
+                  "    pm.expect(p.stock).to.eql(25);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.4 Actualizar precio (PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}/price",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{newProductId}}",
+                "price"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"price\": 279900.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Precio = 279900', () => pm.expect(Number(pm.response.json().price)).to.eql(279900));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.5 Actualizar disponibilidad: stock",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{newProductId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stock\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const p = pm.response.json();",
+                  "pm.test('Stock = 40 y available = 40', () => { pm.expect(p.stock).to.eql(40); pm.expect(p.available).to.eql(40); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.6 Actualizar disponibilidad: desactivar",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{newProductId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"active\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('active = false', () => pm.expect(pm.response.json().active).to.be.false);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.7 Actualizar disponibilidad: stock y reactivar",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{newProductId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stock\": 35,\n  \"active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const p = pm.response.json();",
+                  "pm.test('stock = 35 y active = true', () => { pm.expect(p.stock).to.eql(35); pm.expect(p.active).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.8 Consultar producto: lectura refleja los cambios (CQRS)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{newProductId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { const p = pm.response.json(); return Number(p.price) === 279900 && p.stock === 35 && p.active === true; })(); } catch (e) { ready = false; }",
+                  "console.log('[proyección cambios] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[proyección cambios] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    pm.test('Vista con precio 279900, stock 35, activo', () => {",
+                  "        const p = pm.response.json();",
+                  "        pm.expect(Number(p.price)).to.eql(279900); pm.expect(p.stock).to.eql(35); pm.expect(p.active).to.be.true;",
+                  "    });",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.9 Eliminar producto (borrado lógico)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{newProductId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.10 Consultar producto eliminado: active=false",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{newProductId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { return pm.response.code === 200 && pm.response.json().active === false; })(); } catch (e) { ready = false; }",
+                  "console.log('[borrado lógico] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[borrado lógico] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    pm.test('Sigue existiendo pero inactivo (borrado lógico)', () => pm.expect(pm.response.json().active).to.be.false);",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.11 Inventario incluye el producto nuevo",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const i = pm.response.json().find(x => x.productId == pm.collectionVariables.get('newProductId'));",
+                  "pm.test('Aparece en el inventario como inactivo', () => { pm.expect(i).to.not.be.undefined; pm.expect(i.active).to.be.false; });"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "RF1: registrar, consultar, actualizar precio y disponibilidad, consultar inventario y borrado lógico. Crea un producto con SKU único por ejecución."
+    },
+    {
+      "name": "2 - SAGA: pedido válido → CONFIRMADO",
+      "item": [
+        {
+          "name": "2.1 Foto del inventario antes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Guarda una foto del inventario para comparar después del pedido",
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const snap = {};",
+                  "pm.response.json().forEach(i => snap[i.sku] = i);",
+                  "pm.collectionVariables.set('invBefore', JSON.stringify(snap));",
+                  "pm.test('Disponible = stock - reservado en todos los ítems', () =>",
+                  "    pm.response.json().forEach(i => pm.expect(i.available).to.eql(i.stock - i.reserved)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.2 Crear pedido (2 mouse + 1 teclado)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"items\": [\n    { \"productId\": {{mouId}}, \"quantity\": 2 },\n    { \"productId\": {{keyId}}, \"quantity\": 1 }\n  ],\n  \"paymentMethod\": \"TARJETA\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', () => pm.response.to.have.status(202));",
+                  "",
+                  "const r = pm.response.json();",
+                  "pm.collectionVariables.set('orderOk', r.orderId);",
+                  "pm.test('Pedido inicia en PENDIENTE', () => pm.expect(r.status).to.eql('PENDIENTE'));",
+                  "pm.test('Header Location', () => pm.expect(pm.response.headers.get('Location')).to.include('/orders/' + r.orderId));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.3 Esperar estado final del pedido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderOk}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderOk}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { return pm.response.code === 200 && ['CONFIRMADO','CANCELADO'].includes(pm.response.json().status); })(); } catch (e) { ready = false; }",
+                  "console.log('[pedido OK] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[pedido OK] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    const o = pm.response.json();",
+                  "    pm.test('Pedido CONFIRMADO', () => pm.expect(o.status).to.eql('CONFIRMADO'));",
+                  "    pm.test('2 ítems y cliente correcto', () => { pm.expect(o.itemsCount).to.eql(2); pm.expect(o.customerId).to.eql(pm.collectionVariables.get('customerId')); });",
+                  "    pm.collectionVariables.set('orderOkTotal', o.total);",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.4 Traza de la SAGA",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderOk}}/saga",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderOk}}",
+                "saga"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const s = pm.response.json();",
+                  "const names = s.steps.filter(x => x.result === 'OK' && x.action === 'EJECUTAR').map(x => x.name);",
+                  "pm.test('SAGA COMPLETADA', () => pm.expect(s.status).to.eql('COMPLETADA'));",
+                  "pm.test('Pasos ejecutados en orden: reservar → pagar → confirmar', () => {",
+                  "    const order = ['RESERVAR_INVENTARIO','PROCESAR_PAGO','CONFIRMAR_PEDIDO'].map(n => names.indexOf(n));",
+                  "    order.forEach(i => pm.expect(i).to.be.above(-1));",
+                  "    pm.expect(order[0]).to.be.below(order[1]); pm.expect(order[1]).to.be.below(order[2]);",
+                  "});",
+                  "pm.test('Sin compensaciones', () => pm.expect(s.steps.filter(x => x.action === 'COMPENSAR')).to.have.lengthOf(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.5 Inventario después: stock descontado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { const b = JSON.parse(pm.collectionVariables.get('invBefore'));",
+                  "const m = pm.response.json().find(i => i.sku === 'MOU-001'), k = pm.response.json().find(i => i.sku === 'KEY-001');",
+                  "return m.stock === b['MOU-001'].stock - 2 && k.stock === b['KEY-001'].stock - 1; })(); } catch (e) { ready = false; }",
+                  "console.log('[inventario OK] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[inventario OK] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    const b = JSON.parse(pm.collectionVariables.get('invBefore'));",
+                  "    const m = pm.response.json().find(i => i.sku === 'MOU-001'), k = pm.response.json().find(i => i.sku === 'KEY-001');",
+                  "    pm.test('MOU-001: stock -2, reservado sin cambio', () => { pm.expect(m.stock).to.eql(b['MOU-001'].stock - 2); pm.expect(m.reserved).to.eql(b['MOU-001'].reserved); });",
+                  "    pm.test('KEY-001: stock -1, reservado sin cambio', () => { pm.expect(k.stock).to.eql(b['KEY-001'].stock - 1); pm.expect(k.reserved).to.eql(b['KEY-001'].reserved); });",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.6 Pago del pedido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments?orderId={{orderOk}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "{{orderOk}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { return pm.response.code === 200 && pm.response.json().length > 0; })(); } catch (e) { ready = false; }",
+                  "console.log('[pago OK] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[pago OK] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    const p = pm.response.json();",
+                  "    pm.test('Un pago APROBADO', () => { pm.expect(p).to.have.lengthOf(1); pm.expect(p[0].status).to.eql('APROBADO'); });",
+                  "    pm.test('Monto del pago = total del pedido', () => pm.expect(Number(p[0].amount)).to.eql(Number(pm.collectionVariables.get('orderOkTotal'))));",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.7 Pedidos del cliente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders?customerId={{customerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "customerId",
+                  "value": "{{customerId}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const list = pm.response.json();",
+                  "pm.test('Incluye el pedido confirmado', () => pm.expect(list.map(o => o.orderId)).to.include(pm.collectionVariables.get('orderOk')));",
+                  "pm.test('Todos son del cliente', () => list.forEach(o => pm.expect(o.customerId).to.eql(pm.collectionVariables.get('customerId'))));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Flujo feliz: PENDIENTE → INVENTARIO_RESERVADO → PAGO_APROBADO → CONFIRMADO. La SAGA queda COMPLETADA."
+    },
+    {
+      "name": "3 - SAGA: pago rechazado (FAIL) → compensación",
+      "item": [
+        {
+          "name": "3.1 Foto del inventario antes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Guarda una foto del inventario para comparar después del pedido",
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const snap = {};",
+                  "pm.response.json().forEach(i => snap[i.sku] = i);",
+                  "pm.collectionVariables.set('invBefore', JSON.stringify(snap));",
+                  "pm.test('Disponible = stock - reservado en todos los ítems', () =>",
+                  "    pm.response.json().forEach(i => pm.expect(i.available).to.eql(i.stock - i.reserved)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.2 Crear pedido",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"items\": [\n    { \"productId\": {{hdsId}}, \"quantity\": 1 }\n  ],\n  \"paymentMethod\": \"FAIL\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', () => pm.response.to.have.status(202));",
+                  "",
+                  "const r = pm.response.json();",
+                  "pm.collectionVariables.set('orderFail', r.orderId);",
+                  "pm.test('Pedido inicia en PENDIENTE', () => pm.expect(r.status).to.eql('PENDIENTE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.3 Esperar estado final del pedido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderFail}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderFail}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { return pm.response.code === 200 && ['CONFIRMADO','CANCELADO'].includes(pm.response.json().status); })(); } catch (e) { ready = false; }",
+                  "console.log('[pedido 3] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[pedido 3] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    pm.test('Pedido CANCELADO', () => pm.expect(pm.response.json().status).to.eql('CANCELADO'));",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.4 Traza de la SAGA: compensaciones",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderFail}}/saga",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderFail}}",
+                "saga"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const s = pm.response.json();",
+                  "const comp = s.steps.filter(x => x.action === 'COMPENSAR' && x.result === 'OK').map(x => x.name);",
+                  "pm.test('SAGA COMPENSADA', () => pm.expect(s.status).to.eql('COMPENSADA'));",
+                  "pm.test('PROCESAR_PAGO falló', () => pm.expect(s.steps.some(x => x.name === 'PROCESAR_PAGO' && x.result === 'ERROR')).to.be.true);",
+                  "pm.test('Compensaciones en orden inverso: LIBERAR_INVENTARIO y luego CANCELAR_PEDIDO', () => {",
+                  "    pm.expect(comp).to.include('LIBERAR_INVENTARIO'); pm.expect(comp).to.include('CANCELAR_PEDIDO');",
+                  "    pm.expect(comp.indexOf('LIBERAR_INVENTARIO')).to.be.below(comp.indexOf('CANCELAR_PEDIDO'));",
+                  "});",
+                  "pm.test('Nunca se confirmó', () => pm.expect(s.steps.some(x => x.name === 'CONFIRMAR_PEDIDO' && x.result === 'OK')).to.be.false);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.5 Inventario después: liberado (igual al inicial)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { const b = JSON.parse(pm.collectionVariables.get('invBefore'))['HDS-001'];",
+                  "const i = pm.response.json().find(i => i.sku === 'HDS-001');",
+                  "return i.stock === b.stock && i.reserved === b.reserved; })(); } catch (e) { ready = false; }",
+                  "console.log('[inventario 3] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[inventario 3] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    const b = JSON.parse(pm.collectionVariables.get('invBefore'))['HDS-001'];",
+                  "    const i = pm.response.json().find(i => i.sku === 'HDS-001');",
+                  "    pm.test('HDS-001: stock, reservado y disponible vuelven al valor inicial', () => {",
+                  "        pm.expect(i.stock).to.eql(b.stock); pm.expect(i.reserved).to.eql(b.reserved); pm.expect(i.available).to.eql(b.available);",
+                  "    });",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.6 Pago rechazado registrado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments?orderId={{orderFail}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "{{orderFail}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { return pm.response.code === 200 && pm.response.json().length > 0; })(); } catch (e) { ready = false; }",
+                  "console.log('[pago 3] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[pago 3] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    const p = pm.response.json();",
+                  "    pm.test('Un pago RECHAZADO', () => { pm.expect(p).to.have.lengthOf(1); pm.expect(p[0].status).to.eql('RECHAZADO'); });",
+                  "    pm.test('Motivo del rechazo', () => pm.expect(p[0].reason).to.include('rechazado'));",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Pago rechazado por medio FAIL: PAGO_RECHAZADO → INVENTARIO_LIBERADO → CANCELADO. La SAGA queda COMPENSADA."
+    },
+    {
+      "name": "4 - SAGA: pago rechazado por monto > 5.000.000",
+      "item": [
+        {
+          "name": "4.1 Foto del inventario antes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Guarda una foto del inventario para comparar después del pedido",
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const snap = {};",
+                  "pm.response.json().forEach(i => snap[i.sku] = i);",
+                  "pm.collectionVariables.set('invBefore', JSON.stringify(snap));",
+                  "pm.test('Disponible = stock - reservado en todos los ítems', () =>",
+                  "    pm.response.json().forEach(i => pm.expect(i.available).to.eql(i.stock - i.reserved)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.2 Crear pedido",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"items\": [\n    { \"productId\": {{lapId}}, \"quantity\": 2 }\n  ],\n  \"paymentMethod\": \"TARJETA\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', () => pm.response.to.have.status(202));",
+                  "",
+                  "const r = pm.response.json();",
+                  "pm.collectionVariables.set('orderAmount', r.orderId);",
+                  "pm.test('Pedido inicia en PENDIENTE', () => pm.expect(r.status).to.eql('PENDIENTE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.3 Esperar estado final del pedido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderAmount}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderAmount}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { return pm.response.code === 200 && ['CONFIRMADO','CANCELADO'].includes(pm.response.json().status); })(); } catch (e) { ready = false; }",
+                  "console.log('[pedido 4] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[pedido 4] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    pm.test('Pedido CANCELADO', () => pm.expect(pm.response.json().status).to.eql('CANCELADO'));",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.4 Traza de la SAGA: compensaciones",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderAmount}}/saga",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderAmount}}",
+                "saga"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const s = pm.response.json();",
+                  "const comp = s.steps.filter(x => x.action === 'COMPENSAR' && x.result === 'OK').map(x => x.name);",
+                  "pm.test('SAGA COMPENSADA', () => pm.expect(s.status).to.eql('COMPENSADA'));",
+                  "pm.test('PROCESAR_PAGO falló', () => pm.expect(s.steps.some(x => x.name === 'PROCESAR_PAGO' && x.result === 'ERROR')).to.be.true);",
+                  "pm.test('Compensaciones en orden inverso: LIBERAR_INVENTARIO y luego CANCELAR_PEDIDO', () => {",
+                  "    pm.expect(comp).to.include('LIBERAR_INVENTARIO'); pm.expect(comp).to.include('CANCELAR_PEDIDO');",
+                  "    pm.expect(comp.indexOf('LIBERAR_INVENTARIO')).to.be.below(comp.indexOf('CANCELAR_PEDIDO'));",
+                  "});",
+                  "pm.test('Nunca se confirmó', () => pm.expect(s.steps.some(x => x.name === 'CONFIRMAR_PEDIDO' && x.result === 'OK')).to.be.false);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.5 Inventario después: liberado (igual al inicial)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { const b = JSON.parse(pm.collectionVariables.get('invBefore'))['LAP-001'];",
+                  "const i = pm.response.json().find(i => i.sku === 'LAP-001');",
+                  "return i.stock === b.stock && i.reserved === b.reserved; })(); } catch (e) { ready = false; }",
+                  "console.log('[inventario 4] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[inventario 4] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    const b = JSON.parse(pm.collectionVariables.get('invBefore'))['LAP-001'];",
+                  "    const i = pm.response.json().find(i => i.sku === 'LAP-001');",
+                  "    pm.test('LAP-001: stock, reservado y disponible vuelven al valor inicial', () => {",
+                  "        pm.expect(i.stock).to.eql(b.stock); pm.expect(i.reserved).to.eql(b.reserved); pm.expect(i.available).to.eql(b.available);",
+                  "    });",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.6 Pago rechazado registrado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments?orderId={{orderAmount}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "{{orderAmount}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { return pm.response.code === 200 && pm.response.json().length > 0; })(); } catch (e) { ready = false; }",
+                  "console.log('[pago 4] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[pago 4] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    const p = pm.response.json();",
+                  "    pm.test('Un pago RECHAZADO', () => { pm.expect(p).to.have.lengthOf(1); pm.expect(p[0].status).to.eql('RECHAZADO'); });",
+                  "    pm.test('Motivo del rechazo', () => pm.expect(p[0].reason).to.include('supera'));",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "2 portátiles (7.000.000) superan el máximo de la pasarela simulada: mismo flujo de compensación que el escenario 3."
+    },
+    {
+      "name": "5 - SAGA: sin stock → CANCELADO sin pago",
+      "item": [
+        {
+          "name": "5.1 Foto del inventario antes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Guarda una foto del inventario para comparar después del pedido",
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const snap = {};",
+                  "pm.response.json().forEach(i => snap[i.sku] = i);",
+                  "pm.collectionVariables.set('invBefore', JSON.stringify(snap));",
+                  "pm.test('Disponible = stock - reservado en todos los ítems', () =>",
+                  "    pm.response.json().forEach(i => pm.expect(i.available).to.eql(i.stock - i.reserved)));",
+                  "",
+                  "// Cantidad que excede lo disponible del monitor",
+                  "pm.collectionVariables.set('qtyNoStock', JSON.parse(pm.collectionVariables.get('invBefore'))['MON-001'].available + 1);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.2 Crear pedido que excede el stock",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"items\": [\n    { \"productId\": {{monId}}, \"quantity\": {{qtyNoStock}} }\n  ],\n  \"paymentMethod\": \"TARJETA\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', () => pm.response.to.have.status(202));",
+                  "",
+                  "const r = pm.response.json();",
+                  "pm.collectionVariables.set('orderNoStock', r.orderId);",
+                  "pm.test('Se acepta en PENDIENTE (el stock lo valida la SAGA)', () => pm.expect(r.status).to.eql('PENDIENTE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.3 Esperar estado final del pedido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderNoStock}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderNoStock}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Consistencia eventual (SAGA asíncrona + proyecciones CQRS): se repite esta petición",
+                  "// cada 500 ms (máx. 30 intentos) hasta que se cumpla la condición. Requiere Collection Runner o newman.",
+                  "// Si la envía a mano con \"Send\" y falla, espere un momento y vuelva a enviarla.",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "let ready = false;",
+                  "try { ready = (() => { return pm.response.code === 200 && ['CONFIRMADO','CANCELADO'].includes(pm.response.json().status); })(); } catch (e) { ready = false; }",
+                  "console.log('[pedido sin stock] intento ' + (tries + 1) + ' -> ' + (ready ? 'listo' : 'esperando'));",
+                  "if (!ready && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    const self = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(self) : postman.setNextRequest(self);",
+                  "    setTimeout(() => {}, 500);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('[pedido sin stock] condición alcanzada antes del tiempo límite', () => pm.expect(ready).to.be.true);",
+                  "",
+                  "    pm.test('Pedido CANCELADO', () => pm.expect(pm.response.json().status).to.eql('CANCELADO'));",
+                  "",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.4 Traza de la SAGA",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderNoStock}}/saga",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderNoStock}}",
+                "saga"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const s = pm.response.json();",
+                  "pm.test('SAGA COMPENSADA', () => pm.expect(s.status).to.eql('COMPENSADA'));",
+                  "pm.test('RESERVAR_INVENTARIO falló', () => pm.expect(s.steps.some(x => x.name === 'RESERVAR_INVENTARIO' && x.result === 'ERROR')).to.be.true);",
+                  "pm.test('No se intentó el pago', () => pm.expect(s.steps.some(x => x.name === 'PROCESAR_PAGO')).to.be.false);",
+                  "pm.test('No hubo que liberar inventario', () => pm.expect(s.steps.some(x => x.name === 'LIBERAR_INVENTARIO')).to.be.false);",
+                  "pm.test('Se canceló el pedido', () => pm.expect(s.steps.some(x => x.name === 'CANCELAR_PEDIDO' && x.result === 'OK')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.5 Inventario sin cambios",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const b = JSON.parse(pm.collectionVariables.get('invBefore'))['MON-001'];",
+                  "const i = pm.response.json().find(i => i.sku === 'MON-001');",
+                  "pm.test('MON-001 sin cambios', () => { pm.expect(i.stock).to.eql(b.stock); pm.expect(i.reserved).to.eql(b.reserved); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.6 Sin pago registrado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments?orderId={{orderNoStock}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "{{orderNoStock}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test('No existe pago para el pedido', () => pm.expect(pm.response.json()).to.have.lengthOf(0));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Sin stock suficiente: PENDIENTE → CANCELADO. La reserva hace rollback (XA), no hay pago ni liberación de inventario."
+    },
+    {
+      "name": "6 - Consultas generales (lado de lectura)",
+      "item": [
+        {
+          "name": "6.1 Listar pedidos recientes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const ids = pm.response.json().map(o => o.orderId);",
+                  "['orderOk','orderFail','orderAmount','orderNoStock'].forEach(v => {",
+                  "    const id = pm.collectionVariables.get(v);",
+                  "    if (id) pm.test('Incluye ' + v, () => pm.expect(ids).to.include(id));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6.2 Pedidos por cliente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders?customerId={{customerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "customerId",
+                  "value": "{{customerId}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const list = pm.response.json();",
+                  "pm.test('Solo pedidos del cliente', () => list.forEach(o => pm.expect(o.customerId).to.eql(pm.collectionVariables.get('customerId'))));",
+                  "const st = list.map(o => o.status);",
+                  "pm.test('Hay pedidos CONFIRMADO y CANCELADO', () => { pm.expect(st).to.include('CONFIRMADO'); pm.expect(st).to.include('CANCELADO'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6.3 Pedidos de un cliente sin pedidos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders?customerId=cliente-inexistente",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "customerId",
+                  "value": "cliente-inexistente"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Lista vacía', () => pm.expect(pm.response.json()).to.have.lengthOf(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6.4 Listar pagos recientes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const st = pm.response.json().map(p => p.status);",
+                  "pm.test('Hay pagos APROBADO y RECHAZADO', () => { pm.expect(st).to.include('APROBADO'); pm.expect(st).to.include('RECHAZADO'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6.5 Inventario final",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test('Ningún producto con reservas colgadas', () => pm.response.json().forEach(i => pm.expect(i.reserved).to.eql(0)));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Consultas del modelo de lectura (queryPU) después de los escenarios."
+    },
+    {
+      "name": "7 - Manejo de errores",
+      "item": [
+        {
+          "name": "7.1 Producto con datos inválidos → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sku\": \"\",\n  \"name\": \"Sin SKU\",\n  \"price\": -10,\n  \"stock\": -1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});",
+                  "pm.test('error = VALIDATION_ERROR', () => pm.expect(e.error).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.2 SKU duplicado → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sku\": \"LAP-001\",\n  \"name\": \"Duplicado\",\n  \"price\": 1000,\n  \"stock\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409', () => pm.response.to.have.status(409));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.3 JSON mal formado → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"sku\": \"X-1\", \"name\": ",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});",
+                  "pm.test('error = MALFORMED_JSON', () => pm.expect(e.error).to.eql('MALFORMED_JSON'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.4 Consultar producto inexistente → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/999999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "999999"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.5 Actualizar (PUT) producto inexistente → 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/999999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "999999"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sku\": \"NOPE-1\",\n  \"name\": \"No existe\",\n  \"price\": 1000,\n  \"stock\": 1,\n  \"active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.6 Cambiar precio de producto inexistente → 404",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/999999/price",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "999999",
+                "price"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"price\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.7 Precio cero → 400",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{mouId}}/price",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{mouId}}",
+                "price"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"price\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});",
+                  "pm.test('error = VALIDATION_ERROR', () => pm.expect(e.error).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.8 Disponibilidad sin campos → 400",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{mouId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{mouId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});",
+                  "pm.test('error = VALIDATION_ERROR', () => pm.expect(e.error).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.9 Stock negativo → 400",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{mouId}}/availability",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{mouId}}",
+                "availability"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stock\": -5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});",
+                  "pm.test('error = VALIDATION_ERROR', () => pm.expect(e.error).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.10 Eliminar producto inexistente → 404",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/999999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "999999"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.11 Pedido sin ítems → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cliente-err\",\n  \"items\": [],\n  \"paymentMethod\": \"TARJETA\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});",
+                  "pm.test('error = VALIDATION_ERROR', () => pm.expect(e.error).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.12 Pedido con cantidad 0 → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cliente-err\",\n  \"items\": [ { \"productId\": {{mouId}}, \"quantity\": 0 } ],\n  \"paymentMethod\": \"TARJETA\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});",
+                  "pm.test('error = VALIDATION_ERROR', () => pm.expect(e.error).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.13 Pedido sin cliente ni medio de pago → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [ { \"productId\": {{mouId}}, \"quantity\": 1 } ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});",
+                  "pm.test('error = VALIDATION_ERROR', () => pm.expect(e.error).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.14 Pedido con producto inexistente → 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cliente-err\",\n  \"items\": [\n    {\n      \"productId\": 999999,\n      \"quantity\": 1\n    }\n  ],\n  \"paymentMethod\": \"TARJETA\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.15 Pedido con producto inactivo → 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "description": "Usa el producto eliminado (borrado lógico) en la carpeta 1.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cliente-err\",\n  \"items\": [ { \"productId\": {{newProductId}}, \"quantity\": 1 } ],\n  \"paymentMethod\": \"TARJETA\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 422', () => pm.response.to.have.status(422));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.16 Pedido inexistente → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/00000000-0000-0000-0000-000000000000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.17 SAGA de pedido inexistente → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/00000000-0000-0000-0000-000000000000/saga",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "00000000-0000-0000-0000-000000000000",
+                "saga"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+                  "",
+                  "const e = pm.response.json();",
+                  "pm.test('Cuerpo de error {error, message, timestamp}', () => {",
+                  "    pm.expect(e).to.have.property('error');",
+                  "    pm.expect(e).to.have.property('message');",
+                  "    pm.expect(e).to.have.property('timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7.18 Id de pedido no UUID → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/no-es-un-uuid",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "no-es-un-uuid"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Validación (400), recurso inexistente (404), conflicto (409) y regla de negocio (422) con cuerpo {error, message, timestamp}."
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080/comercio-jee/api"
+    },
+    {
+      "key": "customerId",
+      "value": "cliente-1"
+    },
+    {
+      "key": "pollTries",
+      "value": "0"
+    },
+    {
+      "key": "lapId",
+      "value": "1"
+    },
+    {
+      "key": "mouId",
+      "value": "2"
+    },
+    {
+      "key": "keyId",
+      "value": "3"
+    },
+    {
+      "key": "monId",
+      "value": "4"
+    },
+    {
+      "key": "hdsId",
+      "value": "5"
+    },
+    {
+      "key": "usbId",
+      "value": "6"
+    },
+    {
+      "key": "newSku",
+      "value": ""
+    },
+    {
+      "key": "newProductId",
+      "value": ""
+    },
+    {
+      "key": "invBefore",
+      "value": "{}"
+    },
+    {
+      "key": "qtyNoStock",
+      "value": "999"
+    },
+    {
+      "key": "orderOk",
+      "value": ""
+    },
+    {
+      "key": "orderOkTotal",
+      "value": ""
+    },
+    {
+      "key": "orderFail",
+      "value": ""
+    },
+    {
+      "key": "orderAmount",
+      "value": ""
+    },
+    {
+      "key": "orderNoStock",
+      "value": ""
+    }
+  ]
+}
