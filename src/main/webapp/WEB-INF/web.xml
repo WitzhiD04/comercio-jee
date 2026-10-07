@@ -2,7 +2,7 @@
          xmlns="https://jakarta.ee/xml/ns/jakartaee"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/web-app_6_1.xsd">
-    <welcome-file-list>
-        <welcome-file>index.html</welcome-file>
-    </welcome-file-list>
+    <display-name>comercio-jee</display-name>
+    <!-- Las 4 fuentes de datos XA se declaran con @DataSourceDefinition en
+         com.comercio.shared.infrastructure.DataSourcesConfiguration -->
 </web-app>

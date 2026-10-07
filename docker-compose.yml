@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: comercio-postgres
+    # max_prepared_transactions > 0 es imprescindible: el 2PC de JTA/XA usa PREPARE TRANSACTION,
+    # que PostgreSQL trae deshabilitado por defecto (valor 0).
+    command: ["postgres", "-c", "max_prepared_transactions=100"]
+    environment:
+      POSTGRES_USER: comercio
+      POSTGRES_PASSWORD: comercio
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      # Crea orders_db, inventory_db, payments_db y query_db al inicializar el contenedor
+      - ./docker/postgres/init-databases.sql:/docker-entrypoint-initdb.d/01-init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U comercio -d query_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  payara:
+    build: .
+    container_name: comercio-payara
+    environment:
+      DB_HOST: postgres
+      DB_USER: comercio
+      DB_PASSWORD: comercio
+    ports:
+      - "8080:8080"
+      - "4848:4848"
+    depends_on:
+      postgres:
+        condition: service_healthy

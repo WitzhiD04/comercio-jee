@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<persistence version="3.2"
+             xmlns="https://jakarta.ee/xml/ns/persistence"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="https://jakarta.ee/xml/ns/persistence https://jakarta.ee/xml/ns/persistence/persistence_3_2.xsd">
+
+    <!--
+      Cuatro unidades de persistencia JTA, una por base de datos. Todas apuntan a datasources XA,
+      así que una misma transacción JTA puede tocar varias unidades y el gestor de transacciones
+      de Payara coordina el commit en dos fases (2PC) entre las bases.
+      schema-generation drop-and-create: el esquema se recrea en cada despliegue (solo para la demo).
+    -->
+
+    <!-- Pedidos + log de la SAGA (orders_db) -->
+    <persistence-unit name="ordersPU" transaction-type="JTA">
+        <jta-data-source>java:app/jdbc/orders</jta-data-source>
+        <exclude-unlisted-classes>true</exclude-unlisted-classes>
+        <properties>
+            <property name="jakarta.persistence.schema-generation.database.action" value="drop-and-create"/>
+            <property name="eclipselink.target-database" value="PostgreSQL"/>
+            <property name="eclipselink.cache.shared.default" value="false"/>
+            <property name="eclipselink.logging.level" value="INFO"/>
+        </properties>
+    </persistence-unit>
+
+    <!-- Catálogo de productos e inventario (inventory_db) -->
+    <persistence-unit name="inventoryPU" transaction-type="JTA">
+        <jta-data-source>java:app/jdbc/inventory</jta-data-source>
+        <exclude-unlisted-classes>true</exclude-unlisted-classes>
+        <properties>
+            <property name="jakarta.persistence.schema-generation.database.action" value="drop-and-create"/>
+            <property name="eclipselink.target-database" value="PostgreSQL"/>
+            <property name="eclipselink.cache.shared.default" value="false"/>
+            <property name="eclipselink.logging.level" value="INFO"/>
+        </properties>
+    </persistence-unit>
+
+    <!-- Pagos (payments_db) -->
+    <persistence-unit name="paymentsPU" transaction-type="JTA">
+        <jta-data-source>java:app/jdbc/payments</jta-data-source>
+        <exclude-unlisted-classes>true</exclude-unlisted-classes>
+        <properties>
+            <property name="jakarta.persistence.schema-generation.database.action" value="drop-and-create"/>
+            <property name="eclipselink.target-database" value="PostgreSQL"/>
+            <property name="eclipselink.cache.shared.default" value="false"/>
+            <property name="eclipselink.logging.level" value="INFO"/>
+        </properties>
+    </persistence-unit>
+
+    <!-- Modelo de lectura CQRS (query_db) -->
+    <persistence-unit name="queryPU" transaction-type="JTA">
+        <jta-data-source>java:app/jdbc/query</jta-data-source>
+        <exclude-unlisted-classes>true</exclude-unlisted-classes>
+        <properties>
+            <property name="jakarta.persistence.schema-generation.database.action" value="drop-and-create"/>
+            <property name="eclipselink.target-database" value="PostgreSQL"/>
+            <property name="eclipselink.cache.shared.default" value="false"/>
+            <property name="eclipselink.logging.level" value="INFO"/>
+        </properties>
+    </persistence-unit>
+</persistence>
