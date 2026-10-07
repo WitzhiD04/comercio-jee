@@ -1,123 +1,47 @@
 @startuml architecture
 title comercio-jee — Arquitectura (CQRS + SAGA orquestada + JTA/XA)
-
-skinparam componentStyle rectangle
 skinparam shadowing false
 skinparam defaultFontName Arial
-skinparam packageStyle rectangle
-skinparam linetype polyline
-skinparam nodesep 40
-skinparam ranksep 50
+skinparam componentStyle rectangle
+skinparam ArrowColor #444444
+skinparam nodesep 50
+skinparam ranksep 45
 
-actor "Cliente REST" as client
+actor Cliente
 
-node "Payara 7 (Jakarta EE 11)  —  WAR comercio-jee" {
-
-  package "API de comandos  (escritura)" as cmdapi #E3F2FD {
-    [ProductCommandResource\nPOST/PUT/PATCH/DELETE /products] as PCR
-    [OrderCommandResource\nPOST /orders → 202] as OCR
+rectangle "Payara 7 · WAR comercio-jee" {
+  rectangle "Escritura (comandos)" #E3F2FD {
+    [API de comandos\nPOST · PUT · PATCH · DELETE] as CMD
+    [Servicios de dominio\nProductos · Pedidos · Inventario · Pagos] as DOM
+    [Orquestador SAGA\n1 paso = 1 transacción JTA/XA] as SAGA
   }
-
-  package "API de consultas  (lectura)" as qryapi #E8F5E9 {
-    [ProductQueryResource\nGET /products] as PQR
-    [InventoryQueryResource\nGET /inventory] as IQR
-    [OrderQueryResource\nGET /orders] as OQR
-    [PaymentQueryResource\nGET /payments] as PAQR
-    [SagaQueryResource\nGET /orders/{id}/saga] as SQR
-  }
-
-  package "Servicios de dominio (command services)" as domain #FFF8E1 {
-    [ProductCommandService] as PCS
-    [OrderCommandService] as OCS
-    [InventoryCommandService\n(MANDATORY)] as ICS
-    [PaymentCommandService\n(MANDATORY)] as PYS
-    [SimulatedPaymentGateway] as GW
-  }
-
-  package "SAGA (orquestación)" as saga #FCE4EC {
-    [OrderSagaOrchestrator] as ORCH
-    [ManagedExecutorService] as MES
-    rectangle "OrderSagaSteps\n@Transactional(REQUIRES_NEW)\n\nTransacción JTA distribuida POR PASO\n(XA, two-phase commit):\ncambio de dominio + estado del pedido\n+ SagaStep → todo o nada" as STEPS #F8BBD0
-  }
-
-  package "Bus de eventos CDI (jakarta.enterprise.event.Event)" as bus #EDE7F6 {
-    queue "ProductChanged\nStockChanged\nOrderStatusChanged\nPaymentProcessed" as EVT
-    queue "OrderPlaced" as PLACED
-  }
-
-  package "Proyecciones CQRS\n@Observes(during = AFTER_SUCCESS) + REQUIRES_NEW" as proj #E0F2F1 {
-    [CatalogProjector] as CP
-    [OrderSummaryProjector] as OSP
-    [PaymentProjector] as PP
-  }
-
-  package "Query services" as qsvc #E8F5E9 {
-    [CatalogQueryService] as CQS
-    [OrderQueryService] as OQS
-    [PaymentQueryService] as PQS
-    [SagaQueryService] as SQS
+  rectangle "Lectura (consultas)" #E8F5E9 {
+    [API de consultas\nGET] as QRY
+    [Proyecciones CQRS\n@Observes AFTER_SUCCESS] as PROJ
   }
 }
 
-database "orders_db\n(ordersPU)\nOrder, OrderItem,\nSagaInstance, SagaStep" as ordersdb
-database "inventory_db\n(inventoryPU)\nProduct,\nInventoryReservation" as invdb
-database "payments_db\n(paymentsPU)\nPayment" as paydb
-database "query_db\n(queryPU)\nProductCatalogView,\nOrderSummaryView,\nPaymentView" as querydb
+database "orders_db" as ODB
+database "inventory_db" as IDB
+database "payments_db" as PDB
+database "query_db" as QDB
 
-client --> cmdapi
-client --> qryapi
+Cliente --> CMD
+Cliente --> QRY
+CMD --> DOM
+DOM -right-> SAGA : OrderPlaced\n(asíncrono)
+SAGA -left-> DOM : pasos y\ncompensaciones
+DOM --> ODB
+DOM --> IDB
+DOM --> PDB
+DOM .right.> PROJ : eventos\nde dominio
+PROJ --> QDB
+QRY -[hidden]-> PROJ
+QRY --> QDB
 
-PCR --> PCS
-OCR --> OCS
-PCS --> invdb
-OCS --> ordersdb : persiste PENDIENTE
-OCS ..> PLACED : fire()
-
-PLACED ..> ORCH : AFTER_SUCCESS\n(solo si hubo commit)
-ORCH --> MES : submit(execute)
-ORCH --> STEPS : paso a paso /\ncompensaciones LIFO
-STEPS --> ICS
-STEPS --> PYS
-STEPS --> OCS : changeStatus
-PYS --> GW
-ICS --> invdb
-PYS --> paydb
-STEPS --> ordersdb : SagaStep
-
-PCS ..> EVT
-ICS ..> EVT
-OCS ..> EVT
-PYS ..> EVT
-EVT ..> CP : AFTER_SUCCESS
-EVT ..> OSP : AFTER_SUCCESS
-EVT ..> PP : AFTER_SUCCESS
-CP --> querydb
-OSP --> querydb
-PP --> querydb
-
-PQR --> CQS
-IQR --> CQS
-OQR --> OQS
-PAQR --> PQS
-SQR --> SQS
-CQS --> querydb
-OQS --> querydb
-PQS --> querydb
-SQS --> ordersdb : traza (lee ordersPU)
-
-note right of STEPS
-  Paso 1 reservar: inventory_db + orders_db
-  Paso 2 pagar:    payments_db  + orders_db
-  Paso 3 confirmar: inventory_db + orders_db
-  Compensación liberar: inventory_db + orders_db
-  PGXADataSource ⇒ PREPARE TRANSACTION /
-  COMMIT PREPARED (max_prepared_transactions=100)
-end note
-
-note bottom of proj
-  Consistencia eventual: la vista se actualiza
-  en una transacción nueva, después del commit
-  del comando. Eventos con versión: se descartan
-  los atrasados.
-end note
+legend bottom
+  <b>JTA/XA:</b> cada paso de la SAGA escribe en 2 bases con commit en dos fases
+  (inventory_db o payments_db + estado del pedido y bitácora en orders_db).
+  <b>CQRS:</b> las vistas de query_db se actualizan después del commit (consistencia eventual).
+endlegend
 @enduml

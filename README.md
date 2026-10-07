@@ -53,28 +53,14 @@ con `className = org.postgresql.xa.PGXADataSource`. Host y credenciales se leen 
 `persistence.xml` define las 4 unidades JTA con `drop-and-create` (el esquema se recrea en cada despliegue)
 y `inventoryPU` carga 6 productos semilla desde `META-INF/sql/inventory-seed.sql`.
 
-### Diagrama de componentes
+### Diagrama de arquitectura
 
 ![Arquitectura](docs/architecture.png)
 
-Fuente: [`docs/architecture.puml`](docs/architecture.puml).
-
-### Diagramas de secuencia de la SAGA
-
-Flujo feliz:
-
-![SAGA flujo feliz](docs/saga-sequence-happy.png)
-
-Flujo de compensación (pago rechazado):
-
-![SAGA compensación](docs/saga-sequence-compensation.png)
-
-Fuente de ambos: [`docs/saga-sequence.puml`](docs/saga-sequence.puml).
-
-Para regenerar los PNG (no hace falta instalar PlantUML ni Graphviz):
+Fuente: [`docs/architecture.puml`](docs/architecture.puml). Para regenerar el PNG (sin instalar PlantUML):
 
 ```bash
-docker run --rm -v "$PWD/docs:/data" plantuml/plantuml -tpng -charset UTF-8 /data/architecture.puml /data/saga-sequence.puml /data/order-states.puml
+docker run --rm -v "$PWD/docs:/data" plantuml/plantuml -tpng -charset UTF-8 /data/architecture.puml
 ```
 
 ---
@@ -227,8 +213,6 @@ Qué implica la **consistencia eventual**:
 ---
 
 ## 5. Máquina de estados del pedido
-
-![Máquina de estados](docs/order-states.png)
 
 | Desde | Hacia |
 |---|---|
