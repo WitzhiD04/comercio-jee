@@ -1,0 +1,16 @@
+@startuml order-states
+title Máquina de estados del pedido (OrderStatus.transitionTo)
+skinparam shadowing false
+skinparam defaultFontName Arial
+
+[*] --> PENDIENTE : POST /orders
+PENDIENTE --> INVENTARIO_RESERVADO : paso 1 OK
+PENDIENTE --> CANCELADO : sin stock /\nproducto inválido
+INVENTARIO_RESERVADO --> PAGO_APROBADO : paso 2 OK
+INVENTARIO_RESERVADO --> PAGO_RECHAZADO : pago rechazado\no fallo técnico
+PAGO_APROBADO --> CONFIRMADO : paso 3 OK
+PAGO_RECHAZADO --> INVENTARIO_LIBERADO : compensación\nreleaseInventory
+INVENTARIO_LIBERADO --> CANCELADO : compensación\ncancelOrder
+CONFIRMADO --> [*]
+CANCELADO --> [*]
+@enduml

@@ -1,0 +1,955 @@
+{
+  "info": {
+    "_postman_id": "e1ef1504-f881-5a8d-a993-ec6f489f4b97",
+    "name": "comercio-jee — SAGA + CQRS",
+    "description": "Escenarios de punta a punta: pedido válido, pago rechazado (FAIL) y sin stock. Ejecutar con el Collection Runner o con newman: el reintento de 'Esperar estado final' usa setNextRequest. Cambie la variable baseUrl si Payara no está en el puerto 8080.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "0 - Catálogo (consultas)",
+      "item": [
+        {
+          "name": "0.1 Productos semilla",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Al menos 5 productos semilla', () => pm.expect(pm.response.json().length).to.be.at.least(5));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.2 Producto por id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "1"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Es el LAP-001', () => pm.expect(pm.response.json().sku).to.eql('LAP-001'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.3 Inventario",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const inv = pm.response.json();",
+                  "pm.test('disponible = stock - reservado', () => inv.forEach(i => pm.expect(i.available).to.eql(i.stock - i.reserved)));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1 - Pedido válido (CONFIRMADO)",
+      "item": [
+        {
+          "name": "1.1 Inventario antes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const inv = pm.response.json();",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('stock_2', inv.find(p => p.productId === 2).stock);",
+                  "pm.collectionVariables.set('stock_3', inv.find(p => p.productId === 3).stock);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.2 Crear pedido",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cliente-1\",\n  \"items\": [\n    {\n      \"productId\": 2,\n      \"quantity\": 2\n    },\n    {\n      \"productId\": 3,\n      \"quantity\": 1\n    }\n  ],\n  \"paymentMethod\": \"TARJETA\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.test('Responde orderId y estado PENDIENTE', () => {",
+                  "    pm.expect(body.orderId).to.be.a('string');",
+                  "    pm.expect(body.status).to.eql('PENDIENTE');",
+                  "});",
+                  "pm.collectionVariables.set('orderOk', body.orderId);",
+                  "pm.collectionVariables.set('pollTries', 0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.3 Esperar estado final (reintento)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderOk}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderOk}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La SAGA es asíncrona: se repite esta misma petición (cada 500 ms, máx. 30 veces)",
+                  "// hasta que el pedido llegue a un estado final. Requiere el Collection Runner o newman.",
+                  "const finals = ['CONFIRMADO', 'CANCELADO'];",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "const status = pm.response.code === 200 ? pm.response.json().status : 'SIN_PROYECCION';",
+                  "console.log('Intento ' + (tries + 1) + ': ' + status);",
+                  "if (!finals.includes(status) && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    setTimeout(() => {}, 500);",
+                  "    const next = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(next) : postman.setNextRequest(next);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('El pedido termina en CONFIRMADO', () => pm.expect(status).to.eql('CONFIRMADO'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.4 Traza de la SAGA",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderOk}}/saga",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderOk}}",
+                "saga"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const saga = pm.response.json();",
+                  "pm.test('SAGA COMPLETADA', () => pm.expect(saga.status).to.eql('COMPLETADA'));",
+                  "pm.test('Pasos registrados', () => {",
+                  "    const steps = saga.steps.map(s => s.name + ':' + s.action + ':' + s.result);",
+                  "    pm.expect(steps).to.include.members([\"RESERVAR_INVENTARIO:EJECUTAR:OK\", \"PROCESAR_PAGO:EJECUTAR:OK\", \"CONFIRMAR_PEDIDO:EJECUTAR:OK\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.5 Inventario después (stock disminuye)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const inv = pm.response.json();",
+                  "const p = id => inv.find(x => x.productId === id);",
+                  "pm.test('MOU-001 baja 2 unidades', () => {",
+                  "    pm.expect(p(2).stock).to.eql(Number(pm.collectionVariables.get('stock_2')) - 2);",
+                  "    pm.expect(p(2).reserved).to.eql(0);",
+                  "    pm.expect(p(2).available).to.eql(p(2).stock - p(2).reserved);",
+                  "});",
+                  "pm.test('KEY-001 baja 1 unidad', () => {",
+                  "    pm.expect(p(3).stock).to.eql(Number(pm.collectionVariables.get('stock_3')) - 1);",
+                  "    pm.expect(p(3).reserved).to.eql(0);",
+                  "    pm.expect(p(3).available).to.eql(p(3).stock - p(3).reserved);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.6 Pagos del pedido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments?orderId={{orderOk}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "{{orderOk}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const pagos = pm.response.json();",
+                  "pm.test('Un pago APROBADO', () => {",
+                  "    pm.expect(pagos).to.have.lengthOf(1);",
+                  "    pm.expect(pagos[0].status).to.eql('APROBADO');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.7 Pedidos del cliente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders?customerId=cliente-1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "customerId",
+                  "value": "cliente-1"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Incluye el pedido confirmado', () => {",
+                  "    const o = pm.response.json().find(x => x.orderId === pm.collectionVariables.get('orderOk'));",
+                  "    pm.expect(o.status).to.eql('CONFIRMADO');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2 - Pago rechazado FAIL (compensación)",
+      "item": [
+        {
+          "name": "2.1 Inventario antes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const inv = pm.response.json();",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('stock_1', inv.find(p => p.productId === 1).stock);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.2 Crear pedido con FAIL",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cliente-2\",\n  \"items\": [\n    {\n      \"productId\": 1,\n      \"quantity\": 1\n    }\n  ],\n  \"paymentMethod\": \"FAIL\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.test('Responde orderId y estado PENDIENTE', () => {",
+                  "    pm.expect(body.orderId).to.be.a('string');",
+                  "    pm.expect(body.status).to.eql('PENDIENTE');",
+                  "});",
+                  "pm.collectionVariables.set('orderFail', body.orderId);",
+                  "pm.collectionVariables.set('pollTries', 0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.3 Esperar estado final (reintento)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderFail}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderFail}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La SAGA es asíncrona: se repite esta misma petición (cada 500 ms, máx. 30 veces)",
+                  "// hasta que el pedido llegue a un estado final. Requiere el Collection Runner o newman.",
+                  "const finals = ['CONFIRMADO', 'CANCELADO'];",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "const status = pm.response.code === 200 ? pm.response.json().status : 'SIN_PROYECCION';",
+                  "console.log('Intento ' + (tries + 1) + ': ' + status);",
+                  "if (!finals.includes(status) && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    setTimeout(() => {}, 500);",
+                  "    const next = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(next) : postman.setNextRequest(next);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('El pedido termina en CANCELADO', () => pm.expect(status).to.eql('CANCELADO'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.4 Traza de la SAGA",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderFail}}/saga",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderFail}}",
+                "saga"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const saga = pm.response.json();",
+                  "pm.test('SAGA COMPENSADA', () => pm.expect(saga.status).to.eql('COMPENSADA'));",
+                  "pm.test('Pasos registrados', () => {",
+                  "    const steps = saga.steps.map(s => s.name + ':' + s.action + ':' + s.result);",
+                  "    pm.expect(steps).to.include.members([\"RESERVAR_INVENTARIO:EJECUTAR:OK\", \"PROCESAR_PAGO:EJECUTAR:ERROR\", \"LIBERAR_INVENTARIO:COMPENSAR:OK\", \"CANCELAR_PEDIDO:COMPENSAR:OK\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.5 Inventario después (stock original)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const inv = pm.response.json();",
+                  "const p = id => inv.find(x => x.productId === id);",
+                  "pm.test('LAP-001 vuelve a su stock original', () => {",
+                  "    pm.expect(p(1).stock).to.eql(Number(pm.collectionVariables.get('stock_1')) - 0);",
+                  "    pm.expect(p(1).reserved).to.eql(0);",
+                  "    pm.expect(p(1).available).to.eql(p(1).stock - p(1).reserved);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.6 Pagos del pedido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments?orderId={{orderFail}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "{{orderFail}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const pagos = pm.response.json();",
+                  "pm.test('Un pago RECHAZADO', () => {",
+                  "    pm.expect(pagos).to.have.lengthOf(1);",
+                  "    pm.expect(pagos[0].status).to.eql('RECHAZADO');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3 - Sin stock (CANCELADO sin pago)",
+      "item": [
+        {
+          "name": "3.1 Inventario antes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const inv = pm.response.json();",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('stock_4', inv.find(p => p.productId === 4).stock);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.2 Crear pedido sin stock",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"cliente-3\",\n  \"items\": [\n    {\n      \"productId\": 4,\n      \"quantity\": 1000\n    }\n  ],\n  \"paymentMethod\": \"TARJETA\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.test('Responde orderId y estado PENDIENTE', () => {",
+                  "    pm.expect(body.orderId).to.be.a('string');",
+                  "    pm.expect(body.status).to.eql('PENDIENTE');",
+                  "});",
+                  "pm.collectionVariables.set('orderNoStock', body.orderId);",
+                  "pm.collectionVariables.set('pollTries', 0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.3 Esperar estado final (reintento)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderNoStock}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderNoStock}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La SAGA es asíncrona: se repite esta misma petición (cada 500 ms, máx. 30 veces)",
+                  "// hasta que el pedido llegue a un estado final. Requiere el Collection Runner o newman.",
+                  "const finals = ['CONFIRMADO', 'CANCELADO'];",
+                  "const tries = Number(pm.collectionVariables.get('pollTries') || 0);",
+                  "const status = pm.response.code === 200 ? pm.response.json().status : 'SIN_PROYECCION';",
+                  "console.log('Intento ' + (tries + 1) + ': ' + status);",
+                  "if (!finals.includes(status) && tries < 30) {",
+                  "    pm.collectionVariables.set('pollTries', tries + 1);",
+                  "    setTimeout(() => {}, 500);",
+                  "    const next = pm.info.requestName;",
+                  "    (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(next) : postman.setNextRequest(next);",
+                  "} else {",
+                  "    pm.collectionVariables.set('pollTries', 0);",
+                  "    pm.test('El pedido termina en CANCELADO', () => pm.expect(status).to.eql('CANCELADO'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.4 Traza de la SAGA",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderNoStock}}/saga",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderNoStock}}",
+                "saga"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const saga = pm.response.json();",
+                  "pm.test('SAGA COMPENSADA', () => pm.expect(saga.status).to.eql('COMPENSADA'));",
+                  "pm.test('Pasos registrados', () => {",
+                  "    const steps = saga.steps.map(s => s.name + ':' + s.action + ':' + s.result);",
+                  "    pm.expect(steps).to.include.members([\"RESERVAR_INVENTARIO:EJECUTAR:ERROR\", \"CANCELAR_PEDIDO:COMPENSAR:OK\"]);",
+                  "});",
+                  "",
+                  "pm.test('No se intentó cobrar ni liberar inventario', () => {",
+                  "    const names = pm.response.json().steps.map(s => s.name);",
+                  "    pm.expect(names).to.not.include('PROCESAR_PAGO');",
+                  "    pm.expect(names).to.not.include('LIBERAR_INVENTARIO');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.5 Inventario después (sin cambios)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "inventory"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const inv = pm.response.json();",
+                  "const p = id => inv.find(x => x.productId === id);",
+                  "pm.test('MON-001 sin cambios', () => {",
+                  "    pm.expect(p(4).stock).to.eql(Number(pm.collectionVariables.get('stock_4')) - 0);",
+                  "    pm.expect(p(4).reserved).to.eql(0);",
+                  "    pm.expect(p(4).available).to.eql(p(4).stock - p(4).reserved);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.6 Pagos del pedido (vacío)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payments?orderId={{orderNoStock}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "{{orderNoStock}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('No se creó ningún pago', () => pm.expect(pm.response.json()).to.have.lengthOf(0));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4 - Errores",
+      "item": [
+        {
+          "name": "4.1 400 validación",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"\",\n  \"items\": [],\n  \"paymentMethod\": \"TARJETA\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('Formato {error, message, timestamp}', () => pm.expect(pm.response.json()).to.have.all.keys('error', 'message', 'timestamp'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.2 404 producto",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "999"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('PRODUCT_NOT_FOUND', () => pm.expect(pm.response.json().error).to.eql('PRODUCT_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.3 409 sku duplicado",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sku\": \"LAP-001\",\n  \"name\": \"Duplicado\",\n  \"price\": 1000,\n  \"stock\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080/comercio-jee/api"
+    },
+    {
+      "key": "pollTries",
+      "value": "0"
+    }
+  ]
+}

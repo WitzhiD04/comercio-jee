@@ -1,0 +1,194 @@
+### comercio-jee — peticiones de prueba
+### Cliente HTTP de IntelliJ / VS Code (extensión REST Client).
+### La SAGA y las proyecciones son ASÍNCRONAS: después de cada POST /orders ejecute varias veces
+### "GET /orders/{id}" hasta que el estado sea CONFIRMADO o CANCELADO, y solo entonces consulte
+### /saga, /inventory y /payments.
+### Si cambió el puerto (PAYARA_HTTP_PORT) ajuste @host.
+
+@host = http://localhost:8080
+@api = {{host}}/comercio-jee/api
+
+########################################################################
+# 0. Catálogo (consultas: leen query_db)
+########################################################################
+
+### Productos semilla
+GET {{api}}/products
+
+### Un producto
+GET {{api}}/products/1
+
+### Inventario (disponible = stock - reservado)
+GET {{api}}/inventory
+
+########################################################################
+# Escenario 1: pedido válido → CONFIRMADO, stock disminuye, SAGA COMPLETADA
+########################################################################
+
+### 1.1 Crear pedido (2 mouse + 1 teclado, total 310.000) → 202 Accepted
+# @name pedidoValido
+POST {{api}}/orders
+Content-Type: application/json
+
+{
+  "customerId": "cliente-1",
+  "items": [
+    { "productId": 2, "quantity": 2 },
+    { "productId": 3, "quantity": 1 }
+  ],
+  "paymentMethod": "TARJETA"
+}
+
+### 1.2 Estado del pedido (repetir hasta CONFIRMADO: PENDIENTE → INVENTARIO_RESERVADO → PAGO_APROBADO → CONFIRMADO)
+GET {{api}}/orders/{{pedidoValido.response.body.orderId}}
+
+### 1.3 Traza de la SAGA (COMPLETADA, 4 pasos OK)
+GET {{api}}/orders/{{pedidoValido.response.body.orderId}}/saga
+
+### 1.4 Inventario: MOU-001 50 → 48, KEY-001 25 → 24
+GET {{api}}/inventory
+
+### 1.5 Pago APROBADO
+GET {{api}}/payments?orderId={{pedidoValido.response.body.orderId}}
+
+### 1.6 Pedidos del cliente
+GET {{api}}/orders?customerId=cliente-1
+
+########################################################################
+# Escenario 2: pago rechazado (paymentMethod FAIL) → compensación → CANCELADO
+########################################################################
+
+### 2.1 Crear pedido con medio de pago FAIL
+# @name pedidoFail
+POST {{api}}/orders
+Content-Type: application/json
+
+{
+  "customerId": "cliente-2",
+  "items": [ { "productId": 1, "quantity": 1 } ],
+  "paymentMethod": "FAIL"
+}
+
+### 2.2 Estado (repetir hasta CANCELADO: … PAGO_RECHAZADO → INVENTARIO_LIBERADO → CANCELADO)
+GET {{api}}/orders/{{pedidoFail.response.body.orderId}}
+
+### 2.3 Traza: PROCESAR_PAGO ERROR, LIBERAR_INVENTARIO y CANCELAR_PEDIDO (COMPENSAR) → COMPENSADA
+GET {{api}}/orders/{{pedidoFail.response.body.orderId}}/saga
+
+### 2.4 Inventario: LAP-001 sigue con stock 10 y reservado 0
+GET {{api}}/inventory
+
+### 2.5 Pago RECHAZADO registrado
+GET {{api}}/payments?orderId={{pedidoFail.response.body.orderId}}
+
+### 2.6 Variante: monto > 5.000.000 (2 portátiles = 7.000.000) también se rechaza
+POST {{api}}/orders
+Content-Type: application/json
+
+{
+  "customerId": "cliente-2",
+  "items": [ { "productId": 1, "quantity": 2 } ],
+  "paymentMethod": "TARJETA"
+}
+
+########################################################################
+# Escenario 3: sin stock → CANCELADO sin pago
+########################################################################
+
+### 3.1 Pedir 10 monitores (stock 3)
+# @name pedidoSinStock
+POST {{api}}/orders
+Content-Type: application/json
+
+{
+  "customerId": "cliente-3",
+  "items": [ { "productId": 4, "quantity": 10 } ],
+  "paymentMethod": "TARJETA"
+}
+
+### 3.2 Estado (repetir hasta CANCELADO: PENDIENTE → CANCELADO)
+GET {{api}}/orders/{{pedidoSinStock.response.body.orderId}}
+
+### 3.3 Traza: RESERVAR_INVENTARIO ERROR + CANCELAR_PEDIDO → COMPENSADA
+GET {{api}}/orders/{{pedidoSinStock.response.body.orderId}}/saga
+
+### 3.4 Inventario: MON-001 sin cambios (stock 3)
+GET {{api}}/inventory
+
+### 3.5 Sin pagos: []
+GET {{api}}/payments?orderId={{pedidoSinStock.response.body.orderId}}
+
+########################################################################
+# Comandos de catálogo
+########################################################################
+
+### Crear producto → 201
+# @name nuevoProducto
+POST {{api}}/products
+Content-Type: application/json
+
+{
+  "sku": "TAB-001",
+  "name": "Tablet Samsung Galaxy Tab A9",
+  "price": 899000,
+  "stock": 12
+}
+
+### Reemplazo completo
+PUT {{api}}/products/{{nuevoProducto.response.body.id}}
+Content-Type: application/json
+
+{
+  "sku": "TAB-001",
+  "name": "Tablet Samsung Galaxy Tab A9+",
+  "price": 949000,
+  "stock": 15,
+  "active": true
+}
+
+### Cambiar precio
+PATCH {{api}}/products/{{nuevoProducto.response.body.id}}/price
+Content-Type: application/json
+
+{ "price": 929000 }
+
+### Cambiar stock y/o activo
+PATCH {{api}}/products/{{nuevoProducto.response.body.id}}/availability
+Content-Type: application/json
+
+{ "stock": 20, "active": true }
+
+### Borrado lógico (active=false) → 204
+DELETE {{api}}/products/{{nuevoProducto.response.body.id}}
+
+### La vista refleja el cambio (consistencia eventual: un instante después del commit)
+GET {{api}}/products/{{nuevoProducto.response.body.id}}
+
+########################################################################
+# Errores ({error, message, timestamp})
+########################################################################
+
+### 400 Bean Validation
+POST {{api}}/orders
+Content-Type: application/json
+
+{ "customerId": "", "items": [], "paymentMethod": "TARJETA" }
+
+### 404 producto inexistente
+GET {{api}}/products/999
+
+### 409 sku duplicado
+POST {{api}}/products
+Content-Type: application/json
+
+{ "sku": "LAP-001", "name": "Duplicado", "price": 1000, "stock": 1 }
+
+### 422 producto inactivo en un pedido (ejecute antes el DELETE de arriba)
+POST {{api}}/orders
+Content-Type: application/json
+
+{
+  "customerId": "cliente-4",
+  "items": [ { "productId": {{nuevoProducto.response.body.id}}, "quantity": 1 } ],
+  "paymentMethod": "TARJETA"
+}
