@@ -56,6 +56,9 @@
     <!-- Modelo de lectura CQRS (query_db) -->
     <persistence-unit name="queryPU" transaction-type="JTA">
         <jta-data-source>java:app/jdbc/query</jta-data-source>
+        <class>com.comercio.query.domain.ProductCatalogView</class>
+        <class>com.comercio.query.domain.OrderSummaryView</class>
+        <class>com.comercio.query.domain.PaymentView</class>
         <exclude-unlisted-classes>true</exclude-unlisted-classes>
         <properties>
             <property name="jakarta.persistence.schema-generation.database.action" value="drop-and-create"/>

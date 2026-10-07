@@ -88,6 +88,14 @@ public class ProductCommandService {
         return changeAvailability(id, null, false);
     }
 
+    /** Publica la foto actual de todos los productos (reconstrucción del modelo de lectura). */
+    public int republishCatalog() {
+        var all = products.findAll();
+        all.forEach(this::publishProductChanged);
+        LOG.info(() -> "Catálogo republicado para las proyecciones: " + all.size() + " productos");
+        return all.size();
+    }
+
     private Product find(Long id) {
         return products.findById(id).orElseThrow(() -> new ProductNotFoundException(id));
     }
