@@ -14,10 +14,13 @@
     <!-- Pedidos + log de la SAGA (orders_db) -->
     <persistence-unit name="ordersPU" transaction-type="JTA">
         <jta-data-source>java:app/jdbc/orders</jta-data-source>
+        <class>com.comercio.order.domain.Order</class>
+        <class>com.comercio.order.domain.OrderItem</class>
+        <class>com.comercio.saga.domain.SagaInstance</class>
+        <class>com.comercio.saga.domain.SagaStep</class>
         <exclude-unlisted-classes>true</exclude-unlisted-classes>
         <properties>
             <property name="jakarta.persistence.schema-generation.database.action" value="drop-and-create"/>
-            <property name="eclipselink.target-database" value="PostgreSQL"/>
             <property name="eclipselink.cache.shared.default" value="false"/>
             <property name="eclipselink.logging.level" value="INFO"/>
         </properties>
@@ -26,10 +29,13 @@
     <!-- Catálogo de productos e inventario (inventory_db) -->
     <persistence-unit name="inventoryPU" transaction-type="JTA">
         <jta-data-source>java:app/jdbc/inventory</jta-data-source>
+        <class>com.comercio.catalog.domain.Product</class>
+        <class>com.comercio.catalog.domain.InventoryReservation</class>
         <exclude-unlisted-classes>true</exclude-unlisted-classes>
         <properties>
             <property name="jakarta.persistence.schema-generation.database.action" value="drop-and-create"/>
-            <property name="eclipselink.target-database" value="PostgreSQL"/>
+            <!-- Datos semilla: productos de ejemplo -->
+            <property name="jakarta.persistence.sql-load-script-source" value="META-INF/sql/inventory-seed.sql"/>
             <property name="eclipselink.cache.shared.default" value="false"/>
             <property name="eclipselink.logging.level" value="INFO"/>
         </properties>
@@ -38,10 +44,10 @@
     <!-- Pagos (payments_db) -->
     <persistence-unit name="paymentsPU" transaction-type="JTA">
         <jta-data-source>java:app/jdbc/payments</jta-data-source>
+        <class>com.comercio.payment.domain.Payment</class>
         <exclude-unlisted-classes>true</exclude-unlisted-classes>
         <properties>
             <property name="jakarta.persistence.schema-generation.database.action" value="drop-and-create"/>
-            <property name="eclipselink.target-database" value="PostgreSQL"/>
             <property name="eclipselink.cache.shared.default" value="false"/>
             <property name="eclipselink.logging.level" value="INFO"/>
         </properties>
@@ -53,7 +59,6 @@
         <exclude-unlisted-classes>true</exclude-unlisted-classes>
         <properties>
             <property name="jakarta.persistence.schema-generation.database.action" value="drop-and-create"/>
-            <property name="eclipselink.target-database" value="PostgreSQL"/>
             <property name="eclipselink.cache.shared.default" value="false"/>
             <property name="eclipselink.logging.level" value="INFO"/>
         </properties>

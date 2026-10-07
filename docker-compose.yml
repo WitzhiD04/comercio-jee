@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: comercio
       POSTGRES_DB: postgres
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       # Crea orders_db, inventory_db, payments_db y query_db al inicializar el contenedor
       - ./docker/postgres/init-databases.sql:/docker-entrypoint-initdb.d/01-init-databases.sql:ro
@@ -28,8 +28,8 @@ services:
       DB_USER: comercio
       DB_PASSWORD: comercio
     ports:
-      - "8080:8080"
-      - "4848:4848"
+      - "${PAYARA_HTTP_PORT:-8080}:8080"
+      - "${PAYARA_ADMIN_PORT:-4848}:4848"
     depends_on:
       postgres:
         condition: service_healthy
